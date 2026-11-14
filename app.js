@@ -4,7 +4,38 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id" + Date.now() + Math.random().toString(16).slice(2));
 const fmtDate = (t) => new Date(t).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
 // 카카오맵 level: 숫자가 작을수록 확대. 장소를 저장하려면 이 level 이하로 확대해야 함
-const MAX_PHOTOS = 6, MAX_ADD_LEVEL = 5, ADD_ZOOM_LEVEL = 3, LABEL_LEVEL = 4, BUCKET = "place-photos";
+const MAX_PHOTOS = 6, MAX_ADD_LEVEL = 5, ADD_ZOOM_LEVEL = 3, LABEL_LEVEL = 4, BUCKET = "place-photos", MAX_LINKS = 10;
+
+// ───────── 링크 ─────────
+// 입력한 글을 http/https 주소로 정리한다. 주소가 아니거나 다른 종류(javascript: 등)면 null.
+function normLink(s) {
+  s = String(s || "").trim();
+  // "제목 + 주소"로 공유된 글은 그 안의 주소만 꺼낸다 (네이버·카카오 공유 등)
+  if (!/^https?:\/\/\S+$/i.test(s)) { const m = s.match(/https?:\/\/[^\s<>"']+/i); if (m) s = m[0]; }
+  if (!s || s.length > 2000) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && !/^(mailto|tel|javascript|data|file|blob|sms):/i.test(s)) s = "https://" + s; // "instagram.com/p/…"처럼 앞부분을 뺀 경우
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    if (!u.hostname || !u.hostname.includes(".")) return null;
+    ["igsh", "igshid", "utm_source", "utm_medium", "utm_campaign", "fbclid"].forEach((k) => u.searchParams.delete(k)); // 공유 추적용 값은 지움
+    return u.href;
+  } catch (e) { return null; }
+}
+// 화면에 보여줄 이름: 인스타그램은 종류까지, 나머지는 사이트 이름
+function linkLabel(href) {
+  try {
+    const u = new URL(href), host = u.hostname.replace(/^www\./, ""), seg = u.pathname.split("/").filter(Boolean);
+    if (/(^|\.)instagram\.com$/.test(host)) return seg[0] === "p" ? "Instagram 게시물" : seg[0] === "reel" || seg[0] === "reels" ? "Instagram 릴스" : seg[0] === "stories" ? "Instagram 스토리" : "Instagram";
+    if (/(^|\.)(naver\.com|naver\.me)$/.test(host)) return host.startsWith("m.place") || host.startsWith("place") || host === "naver.me" ? "네이버 지도" : host.startsWith("blog") || host.startsWith("m.blog") ? "네이버 블로그" : "네이버";
+    if (/(^|\.)(kakao\.com)$/.test(host) && /map/.test(host)) return "카카오맵";
+    if (/(^|\.)youtube\.com$|(^|\.)youtu\.be$/.test(host)) return "YouTube";
+    return host;
+  } catch (e) { return href; }
+}
+const shortUrl = (href) => { try { const u = new URL(href); return (u.hostname.replace(/^www\./, "") + u.pathname + u.search).replace(/\/$/, ""); } catch (e) { return href; } };
+// 저장돼 있던 값도 화면에 내보내기 전에 다시 검사한다
+const safeLinks = (arr) => (Array.isArray(arr) ? arr : []).map(normLink).filter(Boolean);
 
 function toast(m, ms = 2600) { const t = $("toast"); t.textContent = m; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), ms); }
 
@@ -28,7 +59,9 @@ const sb = cfgOk ? window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPA
 let me = null, places = [], profiles = {};
 const nameOf = (id) => profiles[id]?.name || "다른 사용자";
 const isMine = (p) => !!me && p.owner === me.id;
-const norm = (r) => ({ ...r, photos: Array.isArray(r.photos) ? r.photos : [], createdAt: Date.parse(r.created_at) || Date.now(), updatedAt: Date.parse(r.updated_at) || Date.now() });
+// status: want = 가볼 곳(빨강), visited = 가본 곳(파랑)
+const norm = (r) => ({ ...r, photos: Array.isArray(r.photos) ? r.photos : [], status: r.status === "visited" ? "visited" : "want", links: safeLinks(r.links), createdAt: Date.parse(r.created_at) || Date.now(), updatedAt: Date.parse(r.updated_at) || Date.now(), visitedAt: r.visited_at ? Date.parse(r.visited_at) : null });
+const STATUS_LABEL = { want: "가볼 곳", visited: "가본 곳" };
 const updCount = () => ($("cnt").textContent = places.length);
 
 // 비공개 사진은 1시간짜리 임시 주소로 받아서 보여준다
@@ -64,7 +97,7 @@ function syncMarkers() {
   if (sheetKind === "detail" && curDetail) markSelected(curDetail);
   if (draft && !draft.isNew) { const om = markers.get(draft.id); if (om) om.ov.setVisible(false); }
 }
-const sig = (p) => p.updated_at + "|" + p.name + "|" + p.owner;
+const sig = (p) => p.updated_at + "|" + p.name + "|" + p.owner + "|" + p.status;
 let reloadT = null, channel = null;
 const reloadSoon = () => { clearTimeout(reloadT); reloadT = setTimeout(load, 300); };
 function subscribe() {
@@ -100,6 +133,7 @@ function llFromClient(cx, cy) {
 function initMap() {
   const v0 = lsGet("map_view_k", { lat: 37.5665, lng: 126.978, level: 6 });
   map = new kakao.maps.Map($("map"), { center: LL(v0.lat, v0.lng), level: v0.level, keyboardShortcuts: false });
+  if (hybrid) map.setMapTypeId(kakao.maps.MapTypeId.HYBRID); // 저장해 둔 위성 지도 설정 적용
   placesSvc = new kakao.maps.services.Places(); geocoder = new kakao.maps.services.Geocoder();
   kakao.maps.event.addListener(map, "idle", () => { const c = map.getCenter(); lsSet("map_view_k", { lat: c.getLat(), lng: c.getLng(), level: map.getLevel() }); });
   const syncLabels = () => $("map").classList.toggle("z-labels", map.getLevel() <= LABEL_LEVEL);
@@ -122,8 +156,9 @@ $("bLayer").onclick = () => {
   toast(hybrid ? "지도 스타일: 위성" : "지도 스타일: 일반");
 };
 
-// ───────── 핀 (내가 저장한 곳은 빨강, 다른 사람이 저장한 곳은 주황) ─────────
+// ───────── 핀 (가볼 곳 = 빨강, 가본 곳 = 파랑, 다른 사람이 저장한 곳은 점 둘레에 검은 테두리) ─────────
 const markers = new Map(); // id -> { ov, el, sig }
+const pinCls = (p) => (p.status === "visited" ? "visited" : "want") + (isMine(p) ? "" : " other");
 function pinEl(name, cls) {
   const w = document.createElement("div"); w.className = "pinw " + cls;
   w.innerHTML = "<i></i>" + (name ? `<span>${esc(name)}</span>` : "");
@@ -131,7 +166,7 @@ function pinEl(name, cls) {
 }
 function addMarker(p) {
   removeMarker(p.id);
-  const el = pinEl(p.name, isMine(p) ? "" : "other");
+  const el = pinEl(p.name, pinCls(p));
   el.tabIndex = 0; el.setAttribute("role", "button"); el.setAttribute("aria-label", p.name);
   const act = (ev) => {
     ev.stopPropagation();
@@ -143,6 +178,7 @@ function addMarker(p) {
   el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); act(ev); } });
   const ov = new kakao.maps.CustomOverlay({ map, position: LL(p.lat, p.lng), content: el, xAnchor: 0.5, yAnchor: 0.5, zIndex: 5, clickable: true });
   markers.set(p.id, { ov, el, sig: sig(p) });
+  if (draft && !draft.isNew && draft.id === p.id) ov.setVisible(false); // 수정 중인 장소는 다시 그려져도 숨김 유지
 }
 const restoreMarkers = () => markers.forEach((m) => m.ov.setVisible(true));
 function removeMarker(id) { const m = markers.get(id); if (m) { m.ov.setMap(null); markers.delete(id); } }
@@ -193,15 +229,22 @@ const armDelete = (btn, label, fn) => { btn.onclick = () => {
 
 // ───────── 입력 폼 (새 장소 / 수정) ─────────
 let draft = null;
-const draftDirty = () => !!draft && (draft.name.trim() || draft.memo.trim() || draft.photos.length || !draft.isNew);
+const draftDirty = () => !!draft && (draft.name.trim() || draft.memo.trim() || draft.photos.length || draft.links.some((l) => l.trim()) || !draft.isNew);
 
 function openForm(lat, lng, existing) {
   releaseUrls();
   draft = existing
-    ? { id: existing.id, lat: existing.lat, lng: existing.lng, name: existing.name, memo: existing.memo || "", photos: existing.photos.map((path) => ({ path, url: null })), removed: [], isNew: false, busy: 0, saving: false }
-    : { id: uid(), lat, lng, name: "", memo: "", photos: [], removed: [], isNew: true, busy: 0, saving: false };
+    ? { id: existing.id, lat: existing.lat, lng: existing.lng, name: existing.name, memo: existing.memo || "", photos: existing.photos.map((path) => ({ path, url: null })), removed: [], status: existing.status, links: [...existing.links], visitedAt: existing.visitedAt, isNew: false, busy: 0, saving: false }
+    : { id: uid(), lat, lng, name: "", memo: "", photos: [], removed: [], status: "want", links: [], visitedAt: null, isNew: true, busy: 0, saving: false };
   showSheet(`<div class="sh"><button class="lnk mut" id="fCancel">취소</button><h2>${draft.isNew ? "새 장소" : "장소 수정"}</h2><button class="lnk b" id="fSave">저장</button></div>
    <div class="grp"><div class="fr"><input id="fName" type="text" placeholder="가게 이름" maxlength="60" autocomplete="off" aria-label="가게 이름" value="${esc(draft.name)}"></div></div>
+   <div class="seg2" role="radiogroup" aria-label="상태">
+     <button type="button" role="radio" class="stbtn want" data-st="want"><i></i>가볼 곳</button>
+     <button type="button" role="radio" class="stbtn visited" data-st="visited"><i></i>가본 곳</button>
+   </div>
+   <div class="lbl"><span>링크 (인스타 게시물, 블로그, 지도 등)</span><span id="lcnt"></span></div>
+   <div class="grp" id="lgrp"></div>
+   <button type="button" class="btn sub" id="addLink" style="margin-top:0;margin-bottom:14px;min-height:44px;font-size:15px">＋ 링크 추가</button>
    <div class="lbl"><span>사진</span><span id="pcnt"></span></div>
    <div class="pgrid" id="pgrid"></div>
    <input id="fFile" class="vh" type="file" accept="image/*" multiple tabindex="-1">
@@ -211,10 +254,15 @@ function openForm(lat, lng, existing) {
    ${draft.isNew ? "" : `<button class="btn del" id="fDel">이 장소 삭제</button>`}`, "form");
   setDraftMarker(draft.lat, draft.lng); markSelected(null);
   if (existing) { const om = markers.get(existing.id); if (om) om.ov.setVisible(false); } // 수정 중에는 원래 점을 숨겨서 핀과 겹치지 않게
-  renderPhotos(); updLoc(); reveal(draft.lat, draft.lng);
+  renderPhotos(); renderLinks(); renderStatus(); updLoc(); reveal(draft.lat, draft.lng);
+  sheet.querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { draft.status = b.dataset.st; renderStatus(); }));
+  $("addLink").onclick = () => {
+    if (draft.links.length >= MAX_LINKS) { toast(`링크는 최대 ${MAX_LINKS}개까지 넣을 수 있습니다.`); return; }
+    draft.links.push(""); renderLinks(); const ins = $("lgrp").querySelectorAll("input"); if (ins.length) ins[ins.length - 1].focus();
+  };
   const d0 = draft;
   if (existing && existing.photos.length) signedUrls(existing.photos).then((us) => { if (draft !== d0) return; d0.photos.forEach((p) => { if (p.path && !p.url) p.url = us[existing.photos.indexOf(p.path)] || null; }); renderPhotos(); });
-  $("fName").oninput = (e) => (draft.name = e.target.value);
+  $("fName").oninput = (e) => { draft.name = e.target.value; const er = $("fErr"); if (er) er.hidden = true; };
   $("fMemo").oninput = (e) => (draft.memo = e.target.value);
   $("fSave").onclick = saveDraft;
   let armed = false;
@@ -225,6 +273,22 @@ function openForm(lat, lng, existing) {
   };
   $("fFile").onchange = onFiles;
   const fd = $("fDel"); if (fd) armDelete(fd, "이 장소 삭제", () => doDelete(draft.id));
+}
+function renderStatus() {
+  if (!draft) return;
+  sheet.querySelectorAll("[data-st]").forEach((b) => { const on = b.dataset.st === draft.status; b.classList.toggle("sel", on); b.setAttribute("aria-checked", on ? "true" : "false"); });
+}
+// 링크 입력칸: 입력할 때는 값만 갱신하고(커서 유지), 추가/삭제할 때만 다시 그림
+function renderLinks() {
+  const g = $("lgrp"); if (!g || !draft) return;
+  g.hidden = !draft.links.length;
+  g.innerHTML = draft.links.map((l, i) => `<div class="fr"><input type="text" inputmode="url" enterkeyhint="done" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="https://www.instagram.com/p/…" aria-label="링크 ${i + 1}" data-li="${i}" value="${esc(l)}"><button type="button" class="rm2" data-lr="${i}" aria-label="링크 ${i + 1} 삭제">✕</button></div>`).join("");
+  $("lcnt").textContent = `${draft.links.length}/${MAX_LINKS}`;
+  g.querySelectorAll("[data-li]").forEach((inp) => {
+    inp.oninput = () => { draft.links[Number(inp.dataset.li)] = inp.value; inp.removeAttribute("aria-invalid"); const e = $("fErr"); if (e) e.hidden = true; };
+    inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); inp.blur(); } }; // 키보드의 이동/완료 키로 입력 끝내기
+  });
+  g.querySelectorAll("[data-lr]").forEach((b) => (b.onclick = () => { draft.links.splice(Number(b.dataset.lr), 1); renderLinks(); }));
 }
 const updLoc = () => { const n = $("fLoc"); if (n) n.textContent = `위치 ${draft.lat.toFixed(5)}, ${draft.lng.toFixed(5)} · 위치를 바꾸려면 지도의 다른 곳을 터치하세요.`; };
 function moveDraft(lat, lng) { if (!draft) return; draft.lat = lat; draft.lng = lng; setDraftMarker(lat, lng); updLoc(); }
@@ -267,23 +331,36 @@ async function onFiles(e) {
 }
 async function saveDraft() {
   const d = draft; if (!d || d.saving) return;
-  const er = $("fErr"), fail = (m) => { er.textContent = m; er.hidden = false; };
+  // 오류는 입력창 맨 아래에 있어 안 보일 수 있으니, 화면 위에 떠 있는 안내(toast)로도 함께 알린다
+  const er = $("fErr"), fail = (m) => { er.textContent = m; er.hidden = false; toast(m, 4500); };
   const name = d.name.trim();
   if (!name) { fail("가게 이름을 입력하세요."); $("fName").focus(); return; }
   if (d.busy) { fail("사진을 처리하는 중입니다. 잠시 뒤 다시 눌러 주세요."); return; }
-  d.saving = true; er.hidden = true; $("fSave").disabled = true; $("fSave").textContent = "저장 중…";
+  // 링크: 빈 칸은 버리고, 주소가 아닌 것이 있으면 몇 번째 칸인지 알려준다. 정리된 주소는 입력칸에도 되돌려 보여준다.
+  const links = []; let bad = -1;
+  d.links.forEach((l, i) => { if (!l.trim()) return; const n = normLink(l); if (!n) { if (bad < 0) bad = i; return; } d.links[i] = n; if (!links.includes(n)) links.push(n); });
+  if (bad >= 0) {
+    fail(`${bad + 1}번째 링크가 주소 형식이 아닙니다. https:// 로 시작하는 주소를 넣어 주세요.`);
+    renderLinks();
+    const inp = $("lgrp").querySelector(`[data-li="${bad}"]`); if (inp) { inp.setAttribute("aria-invalid", "true"); inp.focus(); }
+    return;
+  }
+  // 저장하는 동안 입력을 바꿔도 반영되지 않으므로, 지금 내용을 확정해서 쓰고 입력창은 잠근다
+  const memo = d.memo.trim(), status = d.status, photos = [...d.photos];
+  const visitedAt = status === "visited" ? new Date(d.visitedAt || Date.now()).toISOString() : null;
+  d.saving = true; er.hidden = true; sheet.classList.add("saving"); $("fSave").disabled = true; $("fSave").textContent = "저장 중…";
   const uploaded = [];
   let saved;
   try {
-    for (const p of d.photos) {
+    for (const p of photos) {
       if (!p.blob) continue;
       const path = `${me.id}/${d.id}/${uid()}.jpg`;
       const r = await sb.storage.from(BUCKET).upload(path, p.blob, { contentType: "image/jpeg", upsert: false });
       if (r.error) throw r.error;
       uploaded.push({ path, ref: p });
     }
-    const photoPaths = d.photos.map((p) => p.path || uploaded.find((u) => u.ref === p).path);
-    const row = { lat: d.lat, lng: d.lng, name, memo: d.memo.trim(), photos: photoPaths };
+    const photoPaths = photos.map((p) => p.path || uploaded.find((u) => u.ref === p).path);
+    const row = { lat: d.lat, lng: d.lng, name, memo, photos: photoPaths, status, links, visited_at: visitedAt };
     const r = d.isNew
       ? await sb.from("places").insert({ id: d.id, ...row }).select().single()
       : await sb.from("places").update({ ...row, updated_at: new Date().toISOString() }).eq("id", d.id).select().single();
@@ -291,17 +368,31 @@ async function saveDraft() {
     saved = r.data;
   } catch (e) {
     if (uploaded.length) sb.storage.from(BUCKET).remove(uploaded.map((u) => u.path)).catch(() => {}); // 올리다 실패한 사진 정리
-    d.saving = false;
+    d.saving = false; sheet.classList.remove("saving");
     if (draft === d && $("fSave")) { $("fSave").disabled = false; $("fSave").textContent = "저장"; fail("저장하지 못했습니다. 네트워크와 로그인 상태를 확인하고, 내가 만든 장소만 수정할 수 있습니다."); }
     return;
   }
   if (d.removed.length) sb.storage.from(BUCKET).remove(d.removed).catch(() => {}); // 지운 사진 파일 정리
   const rec = norm(saved), i = places.findIndex((x) => x.id === rec.id);
   if (i >= 0) places[i] = rec; else places.push(rec);
-  updCount(); addMarker(rec);
-  if (draft === d) hideSheet();
+  updCount(); sheet.classList.remove("saving");
+  if (draft === d) hideSheet(); // 먼저 닫아야 수정 중이던 점이 숨겨진 채 다시 그려지지 않음
+  addMarker(rec);
   toast(d.isNew ? "저장했습니다" : "수정했습니다");
   if (d.isNew) { markSelected(rec.id); setTimeout(() => { if (selId === rec.id && !sheetKind) markSelected(null); }, 1600); }
+}
+// 가볼 곳 ↔ 가본 곳 바꾸기 (만든 사람만)
+async function setStatus(id, st) {
+  const p = places.find((x) => x.id === id); if (!p || !isMine(p)) return;
+  // 요청이 끝나기 전에 수정·삭제를 누르면 오래된 내용으로 덮어쓸 수 있어서 같이 잠근다
+  const lock = (on) => ["dSt", "dEdit", "dDel"].forEach((k) => { const b = $(k); if (b) b.disabled = on; });
+  lock(true);
+  const r = await sb.from("places").update({ status: st, visited_at: st === "visited" ? new Date().toISOString() : null }).eq("id", id).select().single();
+  if (r.error || !r.data) { lock(false); toast("바꾸지 못했습니다. 네트워크와 로그인 상태를 확인하세요."); return; }
+  const rec = norm(r.data), i = places.findIndex((x) => x.id === id);
+  if (i >= 0) places[i] = rec;
+  addMarker(rec); toast(st === "visited" ? "가본 곳으로 바꿨습니다" : "가볼 곳으로 바꿨습니다");
+  if (curDetail === id && sheetKind === "detail") openDetail(id);
 }
 async function doDelete(id) {
   const p = places.find((x) => x.id === id);
@@ -316,18 +407,24 @@ function openDetail(id) {
   if (sheetKind === "form" && draftDirty()) { toast("작성 중입니다. 저장하거나 취소한 뒤 다른 장소를 열어 주세요."); return; }
   const p = places.find((x) => x.id === id); if (!p) return;
   releaseUrls();
-  const mine = isMine(p);
+  const mine = isMine(p), links = safeLinks(p.links);
   showSheet(`<div class="sh"><button class="lnk mut" id="dClose">닫기</button><h2>장소</h2>${mine ? `<button class="lnk" id="dEdit">수정</button>` : `<span style="width:44px"></span>`}</div>
    ${p.photos.length ? `<div class="strip${p.photos.length === 1 ? " one" : ""}" id="strip">${p.photos.map((path, i) => `<button data-ph="${i}" aria-label="사진 ${i + 1} 크게 보기"><img data-path="${esc(path)}" alt="${esc(p.name)} 사진 ${i + 1}"></button>`).join("")}</div>` : ""}
    <h3 class="dname">${esc(p.name)}</h3>
-   <div class="who">${mine ? "내가 저장한 장소" : esc(nameOf(p.owner)) + "님이 저장한 장소"}</div>
+   <div class="who"><span class="chip ${p.status}"><i></i>${STATUS_LABEL[p.status]}</span> ${mine ? "내가 저장한 장소" : esc(nameOf(p.owner)) + "님이 저장한 장소"}</div>
    ${p.memo ? `<p class="dmemo" style="margin-top:10px">${esc(p.memo)}</p>` : ""}
-   <div class="meta" style="margin-top:8px">저장 ${fmtDate(p.createdAt)}${p.updatedAt - p.createdAt > 60000 ? ` · 수정 ${fmtDate(p.updatedAt)}` : ""}<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
-   <a class="btn sub" id="dOpen" href="https://map.kakao.com/link/map/${encodeURIComponent(p.name)},${p.lat},${p.lng}" target="_blank" rel="noopener">카카오맵에서 열기</a>
+   ${links.length ? `<div class="lbl" style="margin:14px 4px 8px"><span>링크</span></div><div class="grp">${links.map((h) => `<a class="linkrow" href="${esc(h)}" target="_blank" rel="noopener noreferrer"><span class="lk"><b>${esc(linkLabel(h))}</b><small>${esc(shortUrl(h))}</small></span><span class="go" aria-hidden="true">↗</span></a>`).join("")}</div>` : ""}
+   <div class="meta" style="margin-top:8px">저장 ${fmtDate(p.createdAt)}${p.updatedAt - p.createdAt > 60000 ? ` · 수정 ${fmtDate(p.updatedAt)}` : ""}${p.status === "visited" && p.visitedAt ? ` · 방문 ${fmtDate(p.visitedAt)}` : ""}<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
+   ${mine ? `<button class="btn ${p.status === "want" ? "blue" : "sub"}" id="dSt">${p.status === "want" ? "다녀왔어요 (가본 곳으로 바꾸기)" : "다시 가볼 곳으로 바꾸기"}</button>` : ""}
+   <a class="btn sub" id="dOpen" href="https://map.kakao.com/link/map/${encodeURIComponent(p.name)},${p.lat},${p.lng}" target="_blank" rel="noopener noreferrer">카카오맵에서 열기</a>
    ${mine ? `<button class="btn del" id="dDel">삭제</button>` : `<p class="note" style="margin-top:12px">다른 사람이 만든 장소는 수정하거나 삭제할 수 없습니다.</p>`}`, "detail");
   curDetail = id; markSelected(id); reveal(p.lat, p.lng);
   $("dClose").onclick = hideSheet;
-  if (mine) { $("dEdit").onclick = () => openForm(p.lat, p.lng, p); armDelete($("dDel"), "삭제", () => doDelete(id)); }
+  if (mine) {
+    $("dEdit").onclick = () => { const fresh = places.find((x) => x.id === id) || p; openForm(fresh.lat, fresh.lng, fresh); }; // 실시간으로 바뀐 최신 내용으로 연다
+    armDelete($("dDel"), "삭제", () => doDelete(id));
+    $("dSt").onclick = () => { const cur = places.find((x) => x.id === id) || p; setStatus(id, cur.status === "want" ? "visited" : "want"); };
+  }
   let resolved = [];
   fillImages(sheet, p.photos).then((us) => { if (curDetail === id) resolved = us; });
   sheet.querySelectorAll("[data-ph]").forEach((b) => (b.onclick = () => {
@@ -364,18 +461,24 @@ function handleTap(ll) {
 
 // ───────── 목록 ─────────
 $("bList").onclick = openList;
+let listFilter = "all";
 function openList() {
   if (!leaveFormOk()) return;
-  releaseUrls();
+  releaseUrls(); listFilter = "all"; // 열 때마다 전체부터 보여줌
   showSheet(`<div class="sh"><span style="width:44px"></span><h2>저장한 장소 ${places.length}</h2><button class="lnk b" id="lDone">완료</button></div>
-   ${places.length ? `<input id="lFil" class="fil" type="search" placeholder="이름·메모·작성자 검색" aria-label="저장한 장소 검색"><div id="lList"></div>`
+   ${places.length ? `<div class="fchips" id="lChips" role="group" aria-label="상태로 거르기"></div><input id="lFil" class="fil" type="search" placeholder="이름·메모·작성자 검색" aria-label="저장한 장소 검색"><div id="lList"></div>`
      : `<div class="empty"><b>아직 저장한 장소가 없습니다</b>지도를 확대해서 저장할 위치를 터치하면<br>가게 이름과 사진을 남길 수 있어요.</div>`}`, "list");
   $("lDone").onclick = hideSheet;
   if (!places.length) return;
   const draw = () => {
     const q = ($("lFil").value || "").trim().toLowerCase();
-    const rows = places.filter((p) => !q || p.name.toLowerCase().includes(q) || (p.memo || "").toLowerCase().includes(q) || nameOf(p.owner).toLowerCase().includes(q)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
-    $("lList").innerHTML = rows.length ? rows.map((p) => `<button class="lrow" data-id="${esc(p.id)}"><span class="lth">${p.photos[0] ? `<img alt="" data-path="${esc(p.photos[0])}">` : "<i></i>"}</span><span class="lmn"><b>${esc(p.name)}</b><small>${isMine(p) ? "내가 저장" : esc(nameOf(p.owner))} · ${fmtDate(p.createdAt)}${p.photos.length ? ` · 사진 ${p.photos.length}` : ""}</small></span></button>`).join("") : `<div class="empty">검색 결과가 없습니다</div>`;
+    const cnt = { all: places.length, want: places.filter((p) => p.status === "want").length, visited: places.filter((p) => p.status === "visited").length };
+    $("lChips").innerHTML = [["all", "전체"], ["want", "가볼 곳"], ["visited", "가본 곳"]].map(([k, t]) => `<button type="button" class="${k}${listFilter === k ? " sel" : ""}" data-f="${k}" aria-pressed="${listFilter === k}">${k === "all" ? "" : "<i></i>"}${t} ${cnt[k]}</button>`).join("");
+    $("lChips").querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { listFilter = b.dataset.f; draw(); }));
+    const filtered = places.filter((p) => (listFilter === "all" || p.status === listFilter) && (!q || p.name.toLowerCase().includes(q) || (p.memo || "").toLowerCase().includes(q) || nameOf(p.owner).toLowerCase().includes(q))).sort((a, b) => b.updatedAt - a.updatedAt);
+    const rows = filtered.slice(0, 60);
+    $("lList").innerHTML = rows.length ? rows.map((p) => `<button class="lrow" data-id="${esc(p.id)}"><span class="lth">${p.photos[0] ? `<img alt="" data-path="${esc(p.photos[0])}">` : `<i class="${p.status}"></i>`}</span><span class="lmn"><b>${esc(p.name)}</b><small>${STATUS_LABEL[p.status]} · ${isMine(p) ? "내가 저장" : esc(nameOf(p.owner))} · ${fmtDate(p.createdAt)}${p.links.length ? ` · 링크 ${p.links.length}` : ""}${p.photos.length ? ` · 사진 ${p.photos.length}` : ""}</small></span></button>`).join("") + (filtered.length > rows.length ? `<div class="empty" style="padding:14px 10px">최근 ${rows.length}개만 보여줍니다. 검색으로 좁혀 보세요.</div>` : "")
+      : `<div class="empty">${q ? "검색 결과가 없습니다" : listFilter === "all" ? "저장한 장소가 없습니다" : STATUS_LABEL[listFilter] + "이 없습니다"}</div>`;
     $("lList").querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => goPlace(b.dataset.id)));
     const firsts = rows.map((p) => p.photos[0]).filter(Boolean);
     if (firsts.length) fillImages($("lList"), firsts);
@@ -436,7 +539,7 @@ $("bLoc").onclick = () => {
   navigator.geolocation.getCurrentPosition((pos) => {
     const ll = LL(pos.coords.latitude, pos.coords.longitude);
     if (meOv) meOv.setMap(null); if (meCircle) meCircle.setMap(null);
-    meCircle = new kakao.maps.Circle({ map, center: ll, radius: Math.min(pos.coords.accuracy || 30, 500), strokeWeight: 1, strokeColor: "#0a84ff", strokeOpacity: 0.6, fillColor: "#0a84ff", fillOpacity: 0.12 });
+    meCircle = new kakao.maps.Circle({ map, center: ll, radius: Math.min(pos.coords.accuracy || 30, 500), strokeWeight: 1, strokeColor: "#5856d6", strokeOpacity: 0.6, fillColor: "#5856d6", fillOpacity: 0.12 });
     meOv = new kakao.maps.CustomOverlay({ map, position: ll, content: pinEl("", "me"), xAnchor: 0.5, yAnchor: 0.5, zIndex: 3, clickable: false });
     goTo(ll, Math.min(map.getLevel(), ADD_ZOOM_LEVEL)); $("toast").hidden = true;
   }, (err) => toast(err.code === 1 ? "위치 권한이 꺼져 있습니다. 설정에서 이 사이트의 위치를 허용해 주세요." : "현재 위치를 가져오지 못했습니다."), { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
@@ -452,7 +555,7 @@ function openMenu() {
    <div class="grp"><div class="fr" style="min-height:52px"><span>전체 장소</span><span style="flex:1"></span><b>${places.length}개 (내가 저장 ${mineCount}개)</b></div>
      <div class="fr"><label for="myName">내 이름</label><input id="myName" type="text" maxlength="20" style="text-align:right" value="${esc(profiles[me.id]?.name || "")}"></div></div>
    <p class="note">이름은 다른 사람에게 보입니다. 로그인 계정: ${esc(me.email || "")}</p>
-   <p class="note">내가 저장한 장소는 <b style="color:var(--accent)">빨간 점</b>, 다른 사람이 저장한 장소는 <b style="color:#ff9500">주황 점</b>으로 보입니다. 수정과 삭제는 만든 사람만 할 수 있습니다.</p>
+   <p class="note"><b style="color:#ff3b30">빨간 점</b>은 가볼 곳, <b style="color:#0a84ff">파란 점</b>은 가본 곳입니다. 다른 사람이 저장한 곳은 점 둘레에 <b>검은 테두리</b>가 있습니다. 수정과 삭제, 가볼 곳·가본 곳 바꾸기는 만든 사람만 할 수 있습니다.</p>
    <button class="btn sub" id="logout">로그아웃</button>`, "menu");
   $("mDone").onclick = hideSheet;
   $("myName").onchange = async () => {

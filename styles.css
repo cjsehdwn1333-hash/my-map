@@ -58,17 +58,20 @@ body.sheet-on .listbtn{display:none}
 
 /* 핀 */
 .pinicon{background:none;border:0}
-.pinw{position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center}
-.pinw i{display:block;width:20px;height:20px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5)}
+/* 점 색: 가볼 곳 = 빨강, 가본 곳 = 파랑, 새 장소 위치 = 초록(깜빡임), 내 위치 = 남보라 */
+.pinw{--pc:#ff3b30;--pcs:rgba(255,59,48,.32);position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center}
+.pinw.visited{--pc:#0a84ff;--pcs:rgba(10,132,255,.32)}
+.pinw.draft{--pc:#34c759;--pcs:rgba(52,199,89,.35)}
+.pinw.me{--pc:#5856d6;--pcs:rgba(88,86,214,.35)}
+.pinw i{display:block;width:20px;height:20px;border-radius:50%;background:var(--pc);border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5)}
 .pinw span{display:none;position:absolute;left:38px;top:50%;transform:translateY(-50%);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:#111;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 5px #fff;pointer-events:none}
 .z-labels .pinw span{display:block}
-.pinw.sel i{transform:scale(1.35);box-shadow:0 0 0 5px rgba(255,59,48,.3),0 1px 5px rgba(0,0,0,.5)}
-.pinw.draft i{background:var(--blue);animation:pulse 1.4s ease-out infinite}
-.pinw.me i{background:var(--blue);width:16px;height:16px}
-.pinw.other i{background:#ff9500}
-.pinw.other.sel i{box-shadow:0 0 0 5px rgba(255,149,0,.35),0 1px 5px rgba(0,0,0,.5)}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(10,132,255,.55),0 1px 5px rgba(0,0,0,.5)}100%{box-shadow:0 0 0 18px rgba(10,132,255,0),0 1px 5px rgba(0,0,0,.5)}}
-@media (prefers-reduced-motion:reduce){.pinw.draft i{animation:none;box-shadow:0 0 0 6px rgba(10,132,255,.35)}}
+.pinw.sel i{transform:scale(1.35);box-shadow:0 0 0 5px var(--pcs),0 1px 5px rgba(0,0,0,.5)}
+.pinw.other i{outline:2px solid #111;outline-offset:0} /* 다른 사람이 저장한 곳: 검은 테두리 */
+.pinw.draft i{animation:pulse 1.4s ease-out infinite}
+.pinw.me i{width:16px;height:16px}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,199,89,.6),0 1px 5px rgba(0,0,0,.5)}100%{box-shadow:0 0 0 18px rgba(52,199,89,0),0 1px 5px rgba(0,0,0,.5)}}
+@media (prefers-reduced-motion:reduce){.pinw.draft i{animation:none;box-shadow:0 0 0 6px rgba(52,199,89,.4)}}
 
 /* 시트 */
 .sheet{position:fixed;z-index:1200;left:0;right:0;bottom:var(--kb,0px);margin:0 auto;max-width:560px;background:var(--bg);border-radius:18px 18px 0 0;box-shadow:0 -4px 24px rgba(0,0,0,.28);
@@ -101,6 +104,7 @@ body.sheet-on .listbtn{display:none}
 .err{color:var(--accent);font-size:13px;margin:0 4px 10px}
 .btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:50px;border-radius:12px;border:0;font-size:17px;font-weight:600;background:var(--accent);color:var(--accent-ink);text-decoration:none;margin-top:10px}
 .btn.sub{background:var(--surface);color:var(--fg)}
+.btn.blue{background:#0a84ff;color:#fff}
 .btn.del{background:var(--surface);color:var(--accent)}
 .btn.del.arm{background:var(--accent);color:var(--accent-ink)}
 .btn:disabled{opacity:.5}
@@ -125,6 +129,33 @@ body.sheet-on .listbtn{display:none}
 .lmn{flex:1;min-width:0}
 .lmn b{display:block;font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lmn small{color:var(--muted);font-size:12px}
+/* 상태 선택(가볼 곳 / 가본 곳) */
+.seg2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.stbtn{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;border-radius:12px;border:2px solid var(--sep);background:var(--surface);font-size:16px;font-weight:600;color:var(--muted)}
+.stbtn i,.chip i,.fchips i{display:inline-block;width:12px;height:12px;border-radius:50%;background:#ff3b30;flex-shrink:0}
+.stbtn.visited i,.chip.visited i,.fchips .visited i{background:#0a84ff}
+.stbtn.sel{color:var(--fg);border-color:#ff3b30;background:var(--bg)}
+.stbtn.visited.sel{border-color:#0a84ff}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:3px 10px 3px 8px;border-radius:99px;background:var(--surface);color:var(--fg);margin-right:6px;vertical-align:1px}
+/* 링크 */
+.fr .rm2{flex:0 0 auto;width:40px;height:40px;border:0;background:none;color:var(--muted);font-size:15px}
+.fr input[data-li]{text-align:left}
+/* 저장 중에는 입력을 잠가서, 저장되는 내용과 화면에 보이는 내용이 어긋나지 않게 함 */
+.sheet.saving .grp input,.sheet.saving .grp textarea,.sheet.saving .stbtn,.sheet.saving #addLink,.sheet.saving .rm,.sheet.saving .rm2,.sheet.saving .ptile.add,.sheet.saving #fDel{pointer-events:none;opacity:.55}
+.fr input[aria-invalid="true"]{outline:none}
+.fr input[aria-invalid="true"]{color:var(--accent)}
+.linkrow{display:flex;align-items:center;gap:10px;min-height:56px;padding:9px 14px;border-top:1px solid var(--bg);text-decoration:none;color:var(--fg)}
+.linkrow:first-child{border-top:0}
+.linkrow .lk{flex:1;min-width:0}
+.linkrow b{display:block;font-size:15px;font-weight:600}
+.linkrow small{display:block;color:var(--muted);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.linkrow .go{color:var(--accent);font-size:18px;font-weight:700}
+.linkrow:active{background:var(--sep)}
+/* 목록 거르기 */
+.fchips{display:flex;gap:8px;margin-bottom:10px;overflow-x:auto;scrollbar-width:none}
+.fchips button{flex:0 0 auto;display:flex;align-items:center;gap:6px;min-height:40px;padding:0 14px;border-radius:99px;border:1px solid var(--sep);background:var(--surface);font-size:14px;font-weight:600}
+.fchips button.sel{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.lth i.want{background:#ff3b30}.lth i.visited{background:#0a84ff}
 .empty{text-align:center;color:var(--muted);padding:28px 10px;font-size:14px;line-height:1.7}
 .empty b{display:block;color:var(--fg);font-size:17px;margin-bottom:4px}
 .fil{width:100%;background:var(--surface);border:0;border-radius:10px;padding:11px 14px;font-size:16px;margin-bottom:10px;outline:0;min-height:44px}

@@ -47,6 +47,15 @@ create table if not exists public.places (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- 가볼 곳 / 가본 곳, 링크(인스타 게시물 등), 가본 날짜. 이미 설치한 경우에도 이 부분만 다시 실행하면 열이 추가됩니다.
+alter table public.places add column if not exists status text not null default 'want';
+alter table public.places add column if not exists links text[] not null default '{}';
+alter table public.places add column if not exists visited_at timestamptz;
+alter table public.places drop constraint if exists places_status_check;
+alter table public.places add constraint places_status_check check (status in ('want','visited'));
+alter table public.places drop constraint if exists places_links_check;
+alter table public.places add constraint places_links_check check (cardinality(links) <= 10 and coalesce(length(array_to_string(links, ' ')), 0) <= 20000);
+
 alter table public.places enable row level security;
 drop policy if exists "places read" on public.places;
 drop policy if exists "places insert own" on public.places;
