@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>내 장소 지도</title>
+<meta name="theme-color" content="#34c759">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="내 장소">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="map" aria-label="지도"></div>
+
+<div id="login" class="loginbox" hidden>
+  <form id="loginForm" class="loginform" autocomplete="on">
+    <div class="logo" aria-hidden="true"></div>
+    <h1>내 장소 지도</h1>
+    <p class="note" style="text-align:center">초대받은 계정으로만 로그인할 수 있습니다.</p>
+    <div class="grp">
+      <div class="fr"><label for="lEmail">이메일</label><input id="lEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="none" required></div>
+      <div class="fr"><label for="lPw">비밀번호</label><input id="lPw" type="password" autocomplete="current-password" required></div>
+    </div>
+    <div class="err" id="lErr" hidden></div>
+    <button class="btn" id="lBtn" type="submit">로그인</button>
+  </form>
+</div>
+
+<div class="topbar">
+  <form id="sf" class="search" role="search" autocomplete="off">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    <input id="q" type="search" placeholder="장소·주소 검색" enterkeyhint="search" aria-label="장소 검색">
+    <button type="button" id="qclr" class="qclr" aria-label="검색어 지우기" hidden>✕</button>
+  </form>
+  <div id="results" class="results" hidden></div>
+</div>
+
+<div class="ctrls">
+  <button class="cbtn" id="bLoc" aria-label="내 위치"><svg viewBox="0 0 24 24"><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.6" class="fill"/></svg></button>
+  <button class="cbtn" id="bLayer" aria-label="지도 스타일 바꾸기"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></button>
+  <button class="cbtn" id="bMenu" aria-label="설정"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="19" cy="12" r="1.4" class="fill"/></svg></button>
+  <button class="cbtn zoom" id="bZi" aria-label="확대"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="cbtn zoom" id="bZo" aria-label="축소"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+</div>
+
+<button class="listbtn" id="bList"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1" class="fill"/><circle cx="4" cy="12" r="1" class="fill"/><circle cx="4" cy="18" r="1" class="fill"/></svg><span>저장한 장소 <b id="cnt">0</b></span></button>
+
+<div id="sheet" class="sheet" hidden></div>
+
+<div id="lb" class="lb" hidden>
+  <button class="lbx" id="lbx" aria-label="닫기">✕</button>
+  <div class="lbstrip" id="lbstrip"></div>
+  <div class="lbn" id="lbn"></div>
+</div>
+
+<div id="toast" class="toast" hidden role="status"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
