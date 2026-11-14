@@ -3,7 +3,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id" + Date.now() + Math.random().toString(16).slice(2));
 const fmtDate = (t) => new Date(t).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
-const MAX_PHOTOS = 6, MIN_ADD_ZOOM = 14, LABEL_ZOOM = 15, BUCKET = "place-photos";
+// 카카오맵 level: 숫자가 작을수록 확대. 장소를 저장하려면 이 level 이하로 확대해야 함
+const MAX_PHOTOS = 6, MAX_ADD_LEVEL = 5, ADD_ZOOM_LEVEL = 3, LABEL_LEVEL = 4, BUCKET = "place-photos";
 
 function toast(m, ms = 2600) { const t = $("toast"); t.textContent = m; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), ms); }
 
@@ -53,11 +54,15 @@ async function load() {
   if (a.error || b.error) { toast("장소를 불러오지 못했습니다. 네트워크를 확인하세요."); return; }
   profiles = Object.fromEntries(b.data.map((x) => [x.id, x]));
   places = a.data.map(norm); updCount();
+  if (!map) return; // 지도가 아직 없으면 지도 준비 후 다시 그림
+  syncMarkers();
+}
+function syncMarkers() {
   const ids = new Set(places.map((p) => p.id));
   [...markers.keys()].forEach((id) => { if (!ids.has(id)) removeMarker(id); });
-  places.forEach((p) => { const m = markers.get(p.id); if (!m || m._sig !== sig(p)) addMarker(p); });
+  places.forEach((p) => { const m = markers.get(p.id); if (!m || m.sig !== sig(p)) addMarker(p); });
   if (sheetKind === "detail" && curDetail) markSelected(curDetail);
-  if (draft && !draft.isNew) { const om = markers.get(draft.id); if (om) om.setOpacity(0); }
+  if (draft && !draft.isNew) { const om = markers.get(draft.id); if (om) om.ov.setVisible(false); }
 }
 const sig = (p) => p.updated_at + "|" + p.name + "|" + p.owner;
 let reloadT = null, channel = null;
@@ -70,56 +75,85 @@ function subscribe() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && me) load(); });
 
-// ───────── 지도 ─────────
+// ───────── 카카오맵 ─────────
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-const view0 = lsGet("map_view", { lat: 37.5665, lng: 126.978, z: 12 });
-const map = L.map("map", { zoomControl: false, zoomSnap: 0.5, zoomDelta: 1, worldCopyJump: true }).setView([view0.lat, view0.lng], view0.z);
-map.attributionControl.setPosition("bottomleft");
-map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
-const darkMQ = matchMedia("(prefers-color-scheme: dark)");
-const cartoUrl = (dark) => `https://{s}.basemaps.cartocdn.com/rastertiles/${dark ? "dark_all" : "voyager"}/{z}/{x}/{y}{r}.png`;
-const LAYERS = {
-  osm: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }),
-  simple: L.tileLayer(cartoUrl(darkMQ.matches), { subdomains: "abcd", maxZoom: 20, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>' }),
-};
-let layerKey = lsGet("map_layer", "osm"); if (!LAYERS[layerKey]) layerKey = "osm";
-LAYERS[layerKey].addTo(map);
-if (darkMQ.addEventListener) darkMQ.addEventListener("change", (e) => LAYERS.simple.setUrl(cartoUrl(e.matches)));
+let map = null, kakaoReady = null, placesSvc = null, geocoder = null;
+const LL = (lat, lng) => new kakao.maps.LatLng(lat, lng);
+function loadKakao() {
+  return new Promise((resolve, reject) => {
+    if (window.kakao && kakao.maps && kakao.maps.Map) return resolve();
+    const key = window.CONFIG && CONFIG.KAKAO_JS_KEY;
+    if (!key || /여기에/.test(key)) return reject(new Error("nokey"));
+    const s = document.createElement("script");
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(key)}&libraries=services&autoload=false`;
+    s.onload = () => { try { kakao.maps.load(resolve); } catch (e) { reject(e); } };
+    s.onerror = () => reject(new Error("load"));
+    document.head.appendChild(s);
+  });
+}
+const goTo = (ll, level) => { map.setLevel(level); map.panTo(ll); };
+function llFromClient(cx, cy) {
+  const r = $("map").getBoundingClientRect();
+  return map.getProjection().coordsFromContainerPoint(new kakao.maps.Point(cx - r.left, cy - r.top));
+}
+function initMap() {
+  const v0 = lsGet("map_view_k", { lat: 37.5665, lng: 126.978, level: 6 });
+  map = new kakao.maps.Map($("map"), { center: LL(v0.lat, v0.lng), level: v0.level, keyboardShortcuts: false });
+  placesSvc = new kakao.maps.services.Places(); geocoder = new kakao.maps.services.Geocoder();
+  kakao.maps.event.addListener(map, "idle", () => { const c = map.getCenter(); lsSet("map_view_k", { lat: c.getLat(), lng: c.getLng(), level: map.getLevel() }); });
+  const syncLabels = () => $("map").classList.toggle("z-labels", map.getLevel() <= LABEL_LEVEL);
+  kakao.maps.event.addListener(map, "zoom_changed", syncLabels); syncLabels();
+  // 더블탭 확대의 첫 번째 탭에서 입력창이 열리지 않게 잠깐 기다렸다가 처리
+  kakao.maps.event.addListener(map, "click", (e) => { hideResults(); clearTimeout(tapTimer); const ll = e.latLng; tapTimer = setTimeout(() => handleTap(ll), 260); });
+  kakao.maps.event.addListener(map, "dblclick", () => clearTimeout(tapTimer));
+  kakao.maps.event.addListener(map, "zoom_start", () => clearTimeout(tapTimer));
+  // 길게 누르기(우클릭)는 같은 동작으로 처리
+  kakao.maps.event.addListener(map, "rightclick", (e) => { clearTimeout(tapTimer); hideResults(); handleTap(e.latLng); });
+  syncMarkers();
+}
+let tapTimer = null;
+$("bZi").onclick = () => map && map.setLevel(Math.max(1, map.getLevel() - 1), { animate: true });
+$("bZo").onclick = () => map && map.setLevel(Math.min(14, map.getLevel() + 1), { animate: true });
+let hybrid = lsGet("map_hybrid", false);
 $("bLayer").onclick = () => {
-  map.removeLayer(LAYERS[layerKey]); layerKey = layerKey === "osm" ? "simple" : "osm"; LAYERS[layerKey].addTo(map); lsSet("map_layer", layerKey);
-  toast(layerKey === "osm" ? "지도 스타일: 표준" : "지도 스타일: 단순");
+  if (!map) return; hybrid = !hybrid; lsSet("map_hybrid", hybrid);
+  map.setMapTypeId(hybrid ? kakao.maps.MapTypeId.HYBRID : kakao.maps.MapTypeId.ROADMAP);
+  toast(hybrid ? "지도 스타일: 위성" : "지도 스타일: 일반");
 };
-$("bZi").onclick = () => map.zoomIn(); $("bZo").onclick = () => map.zoomOut();
-map.on("moveend", () => { const c = map.getCenter(); lsSet("map_view", { lat: c.lat, lng: c.lng, z: map.getZoom() }); });
-function syncLabels() { $("map").classList.toggle("z-labels", map.getZoom() >= LABEL_ZOOM); }
-map.on("zoomend", syncLabels); syncLabels();
 
 // ───────── 핀 (내가 저장한 곳은 빨강, 다른 사람이 저장한 곳은 주황) ─────────
-const markers = new Map();
-const pinHtml = (name, cls = "") => `<div class="pinw ${cls}"><i></i>${name ? `<span>${esc(name)}</span>` : ""}</div>`;
-const pinIcon = (p, sel) => L.divIcon({ className: "pinicon", html: pinHtml(p.name, (sel ? "sel " : "") + (isMine(p) ? "" : "other")), iconSize: [44, 44], iconAnchor: [22, 22] });
+const markers = new Map(); // id -> { ov, el, sig }
+function pinEl(name, cls) {
+  const w = document.createElement("div"); w.className = "pinw " + cls;
+  w.innerHTML = "<i></i>" + (name ? `<span>${esc(name)}</span>` : "");
+  return w;
+}
 function addMarker(p) {
   removeMarker(p.id);
-  const m = L.marker([p.lat, p.lng], { icon: pinIcon(p, false), title: p.name, keyboard: true, riseOnHover: true }).addTo(map);
-  m._sig = sig(p);
-  m.on("click", (ev) => {
+  const el = pinEl(p.name, isMine(p) ? "" : "other");
+  el.tabIndex = 0; el.setAttribute("role", "button"); el.setAttribute("aria-label", p.name);
+  const act = (ev) => {
+    ev.stopPropagation();
     // 작성 중이면 점을 눌러도 상세로 넘어가지 않고, 누른 자리로 핀만 옮김
-    if (sheetKind === "form" && draft && draftDirty()) { const ll = map.mouseEventToLatLng(ev.originalEvent); moveDraft(ll.lat, ll.lng); return; }
+    if (sheetKind === "form" && draft && draftDirty() && ev.clientX !== undefined && ev.type === "click") { const ll = llFromClient(ev.clientX, ev.clientY); moveDraft(ll.getLat(), ll.getLng()); return; }
     openDetail(p.id);
-  });
-  markers.set(p.id, m);
+  };
+  el.addEventListener("click", act);
+  el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); act(ev); } });
+  const ov = new kakao.maps.CustomOverlay({ map, position: LL(p.lat, p.lng), content: el, xAnchor: 0.5, yAnchor: 0.5, zIndex: 5, clickable: true });
+  markers.set(p.id, { ov, el, sig: sig(p) });
 }
-const restoreMarkers = () => markers.forEach((m) => m.setOpacity(1));
-function removeMarker(id) { const m = markers.get(id); if (m) { map.removeLayer(m); markers.delete(id); } }
+const restoreMarkers = () => markers.forEach((m) => m.ov.setVisible(true));
+function removeMarker(id) { const m = markers.get(id); if (m) { m.ov.setMap(null); markers.delete(id); } }
 let selId = null;
-function markSelected(id) { selId = id; markers.forEach((m, k) => { const p = places.find((x) => x.id === k); if (p) m.setIcon(pinIcon(p, k === id)); }); }
-let draftMarker = null;
+function markSelected(id) { selId = id; markers.forEach((m, k) => m.el.classList.toggle("sel", k === id)); }
+let draftOv = null;
 function setDraftMarker(lat, lng) {
-  if (draftMarker) map.removeLayer(draftMarker);
-  draftMarker = L.marker([lat, lng], { icon: L.divIcon({ className: "pinicon", html: pinHtml("", "draft"), iconSize: [44, 44], iconAnchor: [22, 22] }), keyboard: false, interactive: false, zIndexOffset: 1000 }).addTo(map);
+  clearDraftMarker();
+  draftOv = new kakao.maps.CustomOverlay({ map, position: LL(lat, lng), content: pinEl("", "draft"), xAnchor: 0.5, yAnchor: 0.5, zIndex: 20, clickable: false });
 }
-function clearDraftMarker() { if (draftMarker) { map.removeLayer(draftMarker); draftMarker = null; } }
+function clearDraftMarker() { if (draftOv) { draftOv.setMap(null); draftOv = null; } }
 
 // ───────── 시트 ─────────
 const sheet = $("sheet");
@@ -141,11 +175,14 @@ function leaveFormOk() {
 // 시트에 가려지는 위치면 지도를 밀어서 보이게
 function reveal(lat, lng) {
   requestAnimationFrame(() => {
+    if (!map) return;
     const sh = sheet.offsetHeight, vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    const top = 76, bottom = vh - sh - 24;
-    const p = map.latLngToContainerPoint([lat, lng]);
-    if (bottom < top + 40) { map.panBy([0, p.y - top], { animate: true }); return; }
-    if (p.y > bottom || p.y < top) map.panBy([0, p.y - (top + bottom) / 2], { animate: true });
+    const top = 76, bottom = vh - sh - 24, proj = map.getProjection();
+    const p = proj.containerPointFromCoords(LL(lat, lng));
+    let dy = 0;
+    if (bottom < top + 40) dy = p.y - top;
+    else if (p.y > bottom || p.y < top) dy = p.y - (top + bottom) / 2;
+    if (Math.abs(dy) > 1) { const el = $("map"); map.panTo(proj.coordsFromContainerPoint(new kakao.maps.Point(el.clientWidth / 2, el.clientHeight / 2 + dy))); }
   });
 }
 const armDelete = (btn, label, fn) => { btn.onclick = () => {
@@ -173,10 +210,10 @@ function openForm(lat, lng, existing) {
    <div class="err" id="fErr" hidden></div>
    ${draft.isNew ? "" : `<button class="btn del" id="fDel">이 장소 삭제</button>`}`, "form");
   setDraftMarker(draft.lat, draft.lng); markSelected(null);
-  if (existing) { const om = markers.get(existing.id); if (om) om.setOpacity(0); } // 수정 중에는 원래 점을 숨겨서 핀과 겹치지 않게
+  if (existing) { const om = markers.get(existing.id); if (om) om.ov.setVisible(false); } // 수정 중에는 원래 점을 숨겨서 핀과 겹치지 않게
   renderPhotos(); updLoc(); reveal(draft.lat, draft.lng);
   const d0 = draft;
-  if (existing && existing.photos.length) signedUrls(existing.photos).then((us) => { if (draft !== d0) return; d0.photos.forEach((p, i) => { if (p.path && !p.url) p.url = us[existing.photos.indexOf(p.path)] || null; }); renderPhotos(); });
+  if (existing && existing.photos.length) signedUrls(existing.photos).then((us) => { if (draft !== d0) return; d0.photos.forEach((p) => { if (p.path && !p.url) p.url = us[existing.photos.indexOf(p.path)] || null; }); renderPhotos(); });
   $("fName").oninput = (e) => (draft.name = e.target.value);
   $("fMemo").oninput = (e) => (draft.memo = e.target.value);
   $("fSave").onclick = saveDraft;
@@ -286,7 +323,7 @@ function openDetail(id) {
    <div class="who">${mine ? "내가 저장한 장소" : esc(nameOf(p.owner)) + "님이 저장한 장소"}</div>
    ${p.memo ? `<p class="dmemo" style="margin-top:10px">${esc(p.memo)}</p>` : ""}
    <div class="meta" style="margin-top:8px">저장 ${fmtDate(p.createdAt)}${p.updatedAt - p.createdAt > 60000 ? ` · 수정 ${fmtDate(p.updatedAt)}` : ""}<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
-   <a class="btn sub" id="dOpen" href="https://maps.apple.com/?ll=${p.lat},${p.lng}&q=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">지도 앱에서 열기</a>
+   <a class="btn sub" id="dOpen" href="https://map.kakao.com/link/map/${encodeURIComponent(p.name)},${p.lat},${p.lng}" target="_blank" rel="noopener">카카오맵에서 열기</a>
    ${mine ? `<button class="btn del" id="dDel">삭제</button>` : `<p class="note" style="margin-top:12px">다른 사람이 만든 장소는 수정하거나 삭제할 수 없습니다.</p>`}`, "detail");
   curDetail = id; markSelected(id); reveal(p.lat, p.lng);
   $("dClose").onclick = hideSheet;
@@ -315,21 +352,15 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") { if (!$("
 
 // ───────── 지도 터치 ─────────
 function handleTap(ll) {
-  if (!me) return;
-  if (sheetKind === "form" && draft) { moveDraft(ll.lat, ll.lng); return; } // 작성 중이면 위치만 옮김
+  if (!me || !map) return;
+  if (sheetKind === "form" && draft) { moveDraft(ll.getLat(), ll.getLng()); return; } // 작성 중이면 위치만 옮김
   if (sheetKind) { hideSheet(); return; } // 상세·목록·설정은 닫기
-  if (map.getZoom() < MIN_ADD_ZOOM) {
-    map.flyTo(ll, 17, { duration: 0.6 }); toast("확대했습니다. 저장할 위치를 다시 터치하세요.");
+  if (map.getLevel() > MAX_ADD_LEVEL) {
+    goTo(ll, ADD_ZOOM_LEVEL); toast("확대했습니다. 저장할 위치를 다시 터치하세요.");
     return;
   }
-  openForm(ll.lat, ll.lng, null);
+  openForm(ll.getLat(), ll.getLng(), null);
 }
-// 더블탭 확대의 첫 번째 탭에서 입력창이 열리지 않게 잠깐 기다렸다가 처리
-let tapTimer = null;
-map.on("click", (e) => { hideResults(); clearTimeout(tapTimer); tapTimer = setTimeout(() => handleTap(e.latlng), 260); });
-map.on("dblclick zoomstart", () => clearTimeout(tapTimer));
-// iOS에서 길게 누르기는 contextmenu로 들어옴: 같은 동작으로 처리
-map.on("contextmenu", (e) => { clearTimeout(tapTimer); hideResults(); handleTap(e.latlng); });
 
 // ───────── 목록 ─────────
 $("bList").onclick = openList;
@@ -352,17 +383,28 @@ function openList() {
   $("lFil").oninput = draw; draw();
 }
 function goPlace(id) {
-  const p = places.find((x) => x.id === id); if (!p) return;
+  const p = places.find((x) => x.id === id); if (!p || !map) return;
   if (!leaveFormOk()) return;
-  hideSheet(); map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), 17), { duration: 0.6 });
-  map.once("moveend", () => openDetail(id)); setTimeout(() => { if (sheetKind !== "detail") openDetail(id); }, 900);
+  hideSheet(); goTo(LL(p.lat, p.lng), Math.min(map.getLevel(), ADD_ZOOM_LEVEL));
+  setTimeout(() => openDetail(id), 400);
 }
 
-// ───────── 검색 (저장한 장소 + 주소/장소 검색) ─────────
+// ───────── 검색 (저장한 장소 + 카카오 장소·주소 검색) ─────────
+// 카카오 검색 결과는 이동에만 쓰고 저장하지 않는다(약관). 저장은 내가 터치한 위치와 직접 입력한 이름만 한다.
 const qEl = $("q"), resEl = $("results");
 function hideResults() { resEl.hidden = true; resEl.innerHTML = ""; }
 qEl.addEventListener("input", () => { $("qclr").hidden = !qEl.value; if (!qEl.value) hideResults(); });
 $("qclr").onclick = () => { qEl.value = ""; $("qclr").hidden = true; hideResults(); qEl.focus(); };
+function kakaoSearch(q) {
+  return new Promise((resolve) => {
+    if (!placesSvc) return resolve(null);
+    placesSvc.keywordSearch(q, (res, status) => {
+      if (status === kakao.maps.services.Status.OK) return resolve(res.map((r) => ({ name: r.place_name, sub: (r.road_address_name || r.address_name || "") + (r.category_group_name ? " · " + r.category_group_name : ""), lat: Number(r.y), lng: Number(r.x) })));
+      if (status !== kakao.maps.services.Status.ZERO_RESULT) return resolve(null);
+      geocoder.addressSearch(q, (r2, s2) => resolve(s2 === kakao.maps.services.Status.OK ? r2.slice(0, 8).map((a) => ({ name: a.address_name, sub: a.road_address ? a.road_address.address_name : "", lat: Number(a.y), lng: Number(a.x) })) : s2 === kakao.maps.services.Status.ZERO_RESULT ? [] : null));
+    }, { size: 8 });
+  });
+}
 let searchSeq = 0;
 $("sf").addEventListener("submit", async (e) => {
   e.preventDefault(); const q = qEl.value.trim(); if (!q) return; qEl.blur();
@@ -371,37 +413,32 @@ $("sf").addEventListener("submit", async (e) => {
   const mineHtml = mine.map((p) => `<button class="res" data-mine="${esc(p.id)}"><b><span class="tag">저장됨</span>${esc(p.name)}</b><small>${esc(p.memo || (isMine(p) ? "내가 저장" : nameOf(p.owner)))}</small></button>`).join("");
   resEl.hidden = false; resEl.innerHTML = mineHtml + `<div class="rnone">검색 중…</div>`;
   bindResults();
-  let list = [], failed = false;
-  try {
-    const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=ko&q=" + encodeURIComponent(q));
-    if (!r.ok) throw new Error(r.status); list = await r.json();
-  } catch (err) { failed = true; }
+  const list = await kakaoSearch(q);
   if (seq !== searchSeq) return;
-  const geoHtml = list.map((g, i) => { const parts = String(g.display_name).split(", "); return `<button class="res" data-geo="${i}"><b>${esc(parts[0])}</b><small>${esc(parts.slice(1).join(", "))}</small></button>`; }).join("");
-  resEl.innerHTML = mineHtml + geoHtml + (!mineHtml && !geoHtml ? `<div class="rnone">${failed ? "검색하지 못했습니다. 네트워크를 확인하세요." : "검색 결과가 없습니다."}</div>` : (failed ? `<div class="rnone">주소 검색은 지금 사용할 수 없습니다.</div>` : ""));
-  bindResults(list);
+  const geoHtml = (list || []).map((g, i) => `<button class="res" data-geo="${i}"><b>${esc(g.name)}</b><small>${esc(g.sub)}</small></button>`).join("");
+  resEl.innerHTML = mineHtml + geoHtml + (!mineHtml && !geoHtml ? `<div class="rnone">${list === null ? "검색하지 못했습니다. 잠시 후 다시 시도하세요." : "검색 결과가 없습니다."}</div>` : (list === null ? `<div class="rnone">장소 검색은 지금 사용할 수 없습니다.</div>` : ""));
+  bindResults(list || []);
 });
 function bindResults(list) {
   resEl.querySelectorAll("[data-mine]").forEach((b) => (b.onclick = () => { hideResults(); goPlace(b.dataset.mine); }));
   resEl.querySelectorAll("[data-geo]").forEach((b) => (b.onclick = () => {
     const g = list[Number(b.dataset.geo)]; hideResults(); if (sheetKind && sheetKind !== "form") hideSheet(); // 작성 중인 폼은 그대로 두고 지도만 이동
-    const bb = g.boundingbox && g.boundingbox.map(Number);
-    if (bb && bb.length === 4 && bb[1] - bb[0] > 0.0008) map.fitBounds([[bb[0], bb[2]], [bb[1], bb[3]]], { maxZoom: 17, padding: [30, 30] });
-    else map.flyTo([Number(g.lat), Number(g.lon)], 17, { duration: 0.6 });
+    if (g && map) goTo(LL(g.lat, g.lng), ADD_ZOOM_LEVEL);
   }));
 }
 
 // ───────── 내 위치 ─────────
-let meMarker = null, meCircle = null;
+let meOv = null, meCircle = null;
 $("bLoc").onclick = () => {
+  if (!map) return;
   if (!navigator.geolocation) { toast("이 브라우저는 위치 기능을 지원하지 않습니다."); return; }
   toast("현재 위치를 찾는 중…", 4000);
   navigator.geolocation.getCurrentPosition((pos) => {
-    const ll = [pos.coords.latitude, pos.coords.longitude];
-    if (meMarker) map.removeLayer(meMarker); if (meCircle) map.removeLayer(meCircle);
-    meCircle = L.circle(ll, { radius: Math.min(pos.coords.accuracy || 30, 500), color: "#0a84ff", weight: 1, fillColor: "#0a84ff", fillOpacity: 0.12, interactive: false }).addTo(map);
-    meMarker = L.marker(ll, { icon: L.divIcon({ className: "pinicon", html: pinHtml("", "me"), iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, keyboard: false }).addTo(map);
-    map.flyTo(ll, Math.max(map.getZoom(), 17), { duration: 0.7 }); $("toast").hidden = true;
+    const ll = LL(pos.coords.latitude, pos.coords.longitude);
+    if (meOv) meOv.setMap(null); if (meCircle) meCircle.setMap(null);
+    meCircle = new kakao.maps.Circle({ map, center: ll, radius: Math.min(pos.coords.accuracy || 30, 500), strokeWeight: 1, strokeColor: "#0a84ff", strokeOpacity: 0.6, fillColor: "#0a84ff", fillOpacity: 0.12 });
+    meOv = new kakao.maps.CustomOverlay({ map, position: ll, content: pinEl("", "me"), xAnchor: 0.5, yAnchor: 0.5, zIndex: 3, clickable: false });
+    goTo(ll, Math.min(map.getLevel(), ADD_ZOOM_LEVEL)); $("toast").hidden = true;
   }, (err) => toast(err.code === 1 ? "위치 권한이 꺼져 있습니다. 설정에서 이 사이트의 위치를 허용해 주세요." : "현재 위치를 가져오지 못했습니다."), { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
 };
 
@@ -446,7 +483,13 @@ async function onSession(s) {
 }
 (async function start() {
   if (!sb) { $("login").hidden = false; $("loginForm").innerHTML = `<h1>설정이 필요합니다</h1><p class="note" style="text-align:center">config.js 에 Supabase 주소와 키를 입력하세요. (README 참고)</p>`; return; }
+  // 지도가 안 떠도 로그인은 되도록 지도를 먼저 시도하고, 실패하면 안내만 띄움
+  kakaoReady = loadKakao().then(() => { initMap(); return true; }).catch((e) => {
+    $("map").innerHTML = `<div class="mapfail"><b>지도를 불러오지 못했습니다</b>${e && e.message === "nokey" ? "config.js 에 카카오 JavaScript 키가 없습니다." : "카카오 개발자 사이트에서 JavaScript SDK 도메인과 카카오맵 사용 설정(ON)을 확인하세요."}</div>`;
+    return false;
+  });
   const { data } = await sb.auth.getSession();
+  await kakaoReady;
   await onSession(data.session);
   sb.auth.onAuthStateChange((ev, s) => { if (ev === "SIGNED_IN" && me && s && me.id === s.user.id) return; if (ev === "SIGNED_IN" || ev === "SIGNED_OUT") onSession(s); });
 })();
