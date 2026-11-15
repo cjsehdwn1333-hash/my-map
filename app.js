@@ -144,7 +144,8 @@ function initMap() {
   kakao.maps.event.addListener(map, "zoom_start", () => clearTimeout(tapTimer));
   // 길게 누르기(우클릭)는 같은 동작으로 처리
   kakao.maps.event.addListener(map, "rightclick", (e) => { clearTimeout(tapTimer); hideResults(); handleTap(e.latLng); });
-  syncMarkers();
+  kakao.maps.event.addListener(map, "idle", scheduleShops);
+  syncMarkers(); scheduleShops();
 }
 let tapTimer = null;
 $("bZi").onclick = () => map && map.setLevel(Math.max(1, map.getLevel() - 1), { animate: true });
@@ -178,6 +179,7 @@ function addMarker(p) {
   el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); act(ev); } });
   const ov = new kakao.maps.CustomOverlay({ map, position: LL(p.lat, p.lng), content: el, xAnchor: 0.5, yAnchor: 0.5, zIndex: 5, clickable: true });
   markers.set(p.id, { ov, el, sig: sig(p) });
+  shopOvs.forEach((o, id) => { const r = shopData.get(id); if (r && Math.abs(Number(r.y) - p.lat) < 0.00022 && Math.abs(Number(r.x) - p.lng) < 0.00028) { o.ov.setMap(null); shopOvs.delete(id); } }); // 같은 자리의 가게 점은 내 점으로 대체
   if (draft && !draft.isNew && draft.id === p.id) ov.setVisible(false); // 수정 중인 장소는 다시 그려져도 숨김 유지
 }
 const restoreMarkers = () => markers.forEach((m) => m.ov.setVisible(true));
@@ -528,6 +530,76 @@ function bindResults(list) {
     const g = list[Number(b.dataset.geo)]; hideResults(); if (sheetKind && sheetKind !== "form") hideSheet(); // 작성 중인 폼은 그대로 두고 지도만 이동
     if (g && map) goTo(LL(g.lat, g.lng), ADD_ZOOM_LEVEL);
   }));
+}
+
+// ───────── 주변 가게 (카카오 장소 정보) ─────────
+// 지도를 확대하면 주변 음식점·카페·명소를 주황 점으로 보여주고, 누르면 정보를 보여준다.
+// 이 정보는 화면에 표시만 하고 저장하지 않는다(약관). 내 장소로 저장할 때는 이름을 직접 입력한다.
+const SHOP_LEVEL = 4, SHOP_CATS = [["FD6", 2], ["CE7", 2], ["AT4", 1]];
+let shopOn = lsGet("shops_on", true), shopSeq = 0, shopTimer = null;
+const shopOvs = new Map(), shopData = new Map();
+function clearShops() { shopOvs.forEach((o) => o.ov.setMap(null)); shopOvs.clear(); shopData.clear(); }
+function scheduleShops() { clearTimeout(shopTimer); shopTimer = setTimeout(loadShops, 450); }
+function searchCat(code, pages, bounds) {
+  return new Promise((resolve) => {
+    const out = []; let n = 0;
+    try {
+      placesSvc.categorySearch(code, (res, status, pg) => {
+        if (status === kakao.maps.services.Status.OK) { out.push(...res); n++; if (pg && pg.hasNextPage && n < pages) { pg.nextPage(); return; } }
+        resolve(out);
+      }, { bounds, size: 15 });
+    } catch (e) { resolve(out); }
+  });
+}
+const nearSaved = (lat, lng) => places.some((p) => Math.abs(p.lat - lat) < 0.00022 && Math.abs(p.lng - lng) < 0.00028);
+async function loadShops() {
+  if (!map || !placesSvc) return;
+  if (!shopOn || map.getLevel() > SHOP_LEVEL) { clearShops(); return; }
+  const seq = ++shopSeq, bounds = map.getBounds();
+  const lists = await Promise.all(SHOP_CATS.map(([c, n]) => searchCat(c, n, bounds)));
+  if (seq !== shopSeq || !shopOn) return;
+  const next = new Map();
+  lists.flat().forEach((r) => { if (r && r.id && !next.has(r.id)) next.set(r.id, r); });
+  shopOvs.forEach((o, id) => { if (!next.has(id)) { o.ov.setMap(null); shopOvs.delete(id); shopData.delete(id); } });
+  next.forEach((r, id) => {
+    shopData.set(id, r);
+    const lat = Number(r.y), lng = Number(r.x);
+    if (shopOvs.has(id) || !isFinite(lat) || !isFinite(lng) || nearSaved(lat, lng)) return;
+    const el = pinEl(r.place_name, "shop");
+    el.tabIndex = 0; el.setAttribute("role", "button"); el.setAttribute("aria-label", r.place_name);
+    const act = (ev) => { ev.stopPropagation(); openShop(id); };
+    el.addEventListener("click", act);
+    el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); act(ev); } });
+    shopOvs.set(id, { ov: new kakao.maps.CustomOverlay({ map, position: LL(lat, lng), content: el, xAnchor: 0.5, yAnchor: 0.5, zIndex: 3, clickable: true }), el });
+  });
+}
+$("bShop").onclick = () => {
+  shopOn = !shopOn; lsSet("shops_on", shopOn);
+  $("bShop").classList.toggle("on", shopOn); $("bShop").setAttribute("aria-pressed", shopOn ? "true" : "false");
+  if (!shopOn) { clearShops(); toast("주변 가게 표시를 껐습니다"); return; }
+  toast(map && map.getLevel() > SHOP_LEVEL ? "지도를 더 확대하면 주변 가게가 보입니다" : "주변 가게를 표시합니다");
+  loadShops();
+};
+$("bShop").classList.toggle("on", shopOn); $("bShop").setAttribute("aria-pressed", shopOn ? "true" : "false");
+const safeKakaoUrl = (u) => { try { const x = new URL(u); return x.protocol === "https:" || x.protocol === "http:" ? x.href : ""; } catch (e) { return ""; } };
+function openShop(id) {
+  const r = shopData.get(id); if (!r) return;
+  const lat = Number(r.y), lng = Number(r.x);
+  if (sheetKind === "form" && draft) { moveDraft(lat, lng); toast("저장할 위치를 이 가게로 옮겼습니다"); return; } // 작성 중이면 위치만 옮김
+  releaseUrls();
+  const cat = (r.category_name || "").split(">").map((s) => s.trim()).filter(Boolean).slice(-2).join(" · ");
+  const addr = r.road_address_name || r.address_name || "", tel = (r.phone || "").trim(), url = safeKakaoUrl(r.place_url);
+  showSheet(`<div class="sh"><button class="lnk mut" id="sClose">닫기</button><h2>가게 정보</h2><span style="width:44px"></span></div>
+   <h3 class="dname">${esc(r.place_name)}</h3>
+   <div class="shopmeta">${cat ? `<span>${esc(cat)}</span>` : ""}${addr ? `<span>${esc(addr)}</span>` : ""}${tel ? `<span><a href="tel:${esc(tel.replace(/[^0-9+]/g, ""))}">${esc(tel)}</a></span>` : ""}<small>카카오맵 장소 정보 · 저장되지 않습니다</small></div>
+   ${url ? `<a class="btn sub" href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="margin-top:0">카카오맵에서 자세히 보기 (후기·메뉴·사진)</a>` : ""}
+   <button class="btn" id="sWant">가볼 곳으로 저장</button>
+   <button class="btn blue" id="sVis">가본 곳으로 저장</button>
+   <p class="note">저장할 때 가게 이름은 직접 입력해 주세요. 카카오 약관상 검색 정보는 저장하지 못합니다.</p>`, "shop");
+  reveal(lat, lng);
+  $("sClose").onclick = hideSheet;
+  const save = (st) => { openForm(lat, lng, null); draft.status = st; renderStatus(); const f = $("fName"); if (f) f.placeholder = r.place_name; };
+  $("sWant").onclick = () => save("want"); $("sVis").onclick = () => save("visited");
 }
 
 // ───────── 내 위치 ─────────

@@ -62,6 +62,12 @@ body.sheet-on .listbtn{display:none}
 .pinw{--pc:#ff3b30;--pcs:rgba(255,59,48,.32);position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center}
 .pinw.visited{--pc:#0a84ff;--pcs:rgba(10,132,255,.32)}
 .pinw.draft{--pc:#34c759;--pcs:rgba(52,199,89,.35)}
+.pinw.shop{--pc:#ff9500;--pcs:rgba(255,149,0,.35);width:36px;height:36px}
+.pinw.shop i{width:12px;height:12px;border-width:2px}
+.pinw.shop span{left:28px;font-size:12px;font-weight:500;color:#6b4300}
+.shopmeta{margin:2px 2px 12px;display:grid;gap:6px;font-size:15px}
+.shopmeta small{color:var(--mut,#8e8e93);font-size:13px}
+.shopmeta a{color:inherit}
 .pinw.me{--pc:#5856d6;--pcs:rgba(88,86,214,.35)}
 .pinw i{display:block;width:20px;height:20px;border-radius:50%;background:var(--pc);border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5)}
 .pinw span{display:none;position:absolute;left:38px;top:50%;transform:translateY(-50%);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:#111;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 5px #fff;pointer-events:none}
