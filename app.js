@@ -504,7 +504,7 @@ function kakaoSearch(q) {
   return new Promise((resolve) => {
     if (!placesSvc) return resolve(null);
     placesSvc.keywordSearch(q, (res, status) => {
-      if (status === kakao.maps.services.Status.OK) return resolve(res.map((r) => ({ name: r.place_name, sub: (r.road_address_name || r.address_name || "") + (r.category_group_name ? " · " + r.category_group_name : ""), lat: Number(r.y), lng: Number(r.x) })));
+      if (status === kakao.maps.services.Status.OK) return resolve(res.map((r) => ({ name: r.place_name, sub: (r.road_address_name || r.address_name || "") + (r.category_group_name ? " · " + r.category_group_name : ""), lat: Number(r.y), lng: Number(r.x), raw: r })));
       if (status !== kakao.maps.services.Status.ZERO_RESULT) return resolve(null);
       geocoder.addressSearch(q, (r2, s2) => resolve(s2 === kakao.maps.services.Status.OK ? r2.slice(0, 8).map((a) => ({ name: a.address_name, sub: a.road_address ? a.road_address.address_name : "", lat: Number(a.y), lng: Number(a.x) })) : s2 === kakao.maps.services.Status.ZERO_RESULT ? [] : null));
     }, { size: 8 });
@@ -529,13 +529,15 @@ function bindResults(list) {
   resEl.querySelectorAll("[data-geo]").forEach((b) => (b.onclick = () => {
     const g = list[Number(b.dataset.geo)]; hideResults(); if (sheetKind && sheetKind !== "form") hideSheet(); // 작성 중인 폼은 그대로 두고 지도만 이동
     if (g && map) goTo(LL(g.lat, g.lng), ADD_ZOOM_LEVEL);
+    if (g && g.raw && !(sheetKind === "form" && draft)) setTimeout(() => { if (!sheetKind) openShop(null, g.raw); }, 450); // 검색한 가게는 정보창도 같이 보여줌
   }));
 }
 
 // ───────── 주변 가게 (카카오 장소 정보) ─────────
 // 지도를 확대하면 주변 음식점·카페·명소를 주황 점으로 보여주고, 누르면 정보를 보여준다.
 // 이 정보는 화면에 표시만 하고 저장하지 않는다(약관). 내 장소로 저장할 때는 이름을 직접 입력한다.
-const SHOP_LEVEL = 4, SHOP_CATS = [["FD6", 2], ["CE7", 2], ["AT4", 1]];
+// 화면을 4칸으로 나눠서 칸마다 검색한다(한 번에 최대 45곳까지만 받을 수 있어서, 번화가에서 잘리지 않게). 음식점·카페는 3쪽, 나머지는 1쪽.
+const SHOP_LEVEL = 4, SHOP_MAX = 260, SHOP_CATS = [["FD6", 3], ["CE7", 3], ["AT4", 1], ["CT1", 1], ["CS2", 1], ["MT1", 1], ["PM9", 1], ["HP8", 1]];
 let shopOn = lsGet("shops_on", true), shopSeq = 0, shopTimer = null;
 const shopOvs = new Map(), shopData = new Map();
 function clearShops() { shopOvs.forEach((o) => o.ov.setMap(null)); shopOvs.clear(); shopData.clear(); }
@@ -543,6 +545,7 @@ function scheduleShops() { clearTimeout(shopTimer); shopTimer = setTimeout(loadS
 function searchCat(code, pages, bounds) {
   return new Promise((resolve) => {
     const out = []; let n = 0;
+    setTimeout(() => resolve(out), 6000); // 응답이 없어도 지도 표시가 멈추지 않게
     try {
       placesSvc.categorySearch(code, (res, status, pg) => {
         if (status === kakao.maps.services.Status.OK) { out.push(...res); n++; if (pg && pg.hasNextPage && n < pages) { pg.nextPage(); return; } }
@@ -555,11 +558,17 @@ const nearSaved = (lat, lng) => places.some((p) => Math.abs(p.lat - lat) < 0.000
 async function loadShops() {
   if (!map || !placesSvc) return;
   if (!shopOn || map.getLevel() > SHOP_LEVEL) { clearShops(); return; }
-  const seq = ++shopSeq, bounds = map.getBounds();
-  const lists = await Promise.all(SHOP_CATS.map(([c, n]) => searchCat(c, n, bounds)));
+  const seq = ++shopSeq, bb = map.getBounds(), sw = bb.getSouthWest(), ne = bb.getNorthEast();
+  const la0 = sw.getLat(), lo0 = sw.getLng(), dla = (ne.getLat() - la0) / 2, dlo = (ne.getLng() - lo0) / 2;
+  const cells = [];
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) cells.push(new kakao.maps.LatLngBounds(new kakao.maps.LatLng(la0 + dla * i, lo0 + dlo * j), new kakao.maps.LatLng(la0 + dla * (i + 1), lo0 + dlo * (j + 1))));
+  const jobs = []; cells.forEach((cb) => SHOP_CATS.forEach(([c, n]) => jobs.push(searchCat(c, n, cb))));
+  const lists = await Promise.all(jobs);
   if (seq !== shopSeq || !shopOn) return;
-  const next = new Map();
-  lists.flat().forEach((r) => { if (r && r.id && !next.has(r.id)) next.set(r.id, r); });
+  const next = new Map(), cLa = (la0 + ne.getLat()) / 2, cLo = (lo0 + ne.getLng()) / 2;
+  const all = lists.flat().filter((r) => r && r.id);
+  all.sort((a, b) => Math.hypot(a.y - cLa, a.x - cLo) - Math.hypot(b.y - cLa, b.x - cLo)); // 화면 가운데에서 가까운 순
+  all.forEach((r) => { if (next.size < SHOP_MAX && !next.has(r.id)) next.set(r.id, r); });
   shopOvs.forEach((o, id) => { if (!next.has(id)) { o.ov.setMap(null); shopOvs.delete(id); shopData.delete(id); } });
   next.forEach((r, id) => {
     shopData.set(id, r);
@@ -582,8 +591,8 @@ $("bShop").onclick = () => {
 };
 $("bShop").classList.toggle("on", shopOn); $("bShop").setAttribute("aria-pressed", shopOn ? "true" : "false");
 const safeKakaoUrl = (u) => { try { const x = new URL(u); return x.protocol === "https:" || x.protocol === "http:" ? x.href : ""; } catch (e) { return ""; } };
-function openShop(id) {
-  const r = shopData.get(id); if (!r) return;
+function openShop(id, raw) {
+  const r = raw || shopData.get(id); if (!r) return;
   const lat = Number(r.y), lng = Number(r.x);
   if (sheetKind === "form" && draft) { moveDraft(lat, lng); toast("저장할 위치를 이 가게로 옮겼습니다"); return; } // 작성 중이면 위치만 옮김
   releaseUrls();
